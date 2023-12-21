@@ -23,9 +23,11 @@ WITH
       dex.trades
     WHERE
       blockchain = 'ethereum'
-      AND token_bought_address = 0xae78736Cd615f374D3085123A210448E74Fc6393
-      OR token_sold_address = 0xae78736Cd615f374D3085123A210448E74Fc6393
+      AND (token_bought_address = 0xae78736Cd615f374D3085123A210448E74Fc6393
+      OR token_sold_address = 0xae78736Cd615f374D3085123A210448E74Fc6393)
       AND block_time >= CAST('2022-01-01' AS TIMESTAMP)
+      AND tx_hash != 0xe18c205f50edd71c64fd8584f5e148d22fb3847428a877bcc50e26d1a89be13f -- Remove an outlier transaction
+      AND tx_hash != 0x68f4a987b11d264b079ca4570e7e528519fe0847993deeeded838ca56ba5b64e -- Remove an outlier transaction
   ),
   reth_trades_eth_amount AS (
     SELECT
@@ -46,7 +48,7 @@ WITH
     SELECT
       block_time AS time,
       CASE
-        WHEN token_bought_symbol = 'stETH' THEN token_bought_amount
+        WHEN token_bought_address = 0xae7ab96520de3a18e5e111b5eaab095312d7fe84 THEN token_bought_amount
         ELSE token_sold_amount
       END AS steth_amount,
       amount_usd
@@ -54,8 +56,8 @@ WITH
       dex.trades
     WHERE
       blockchain = 'ethereum'
-      AND token_bought_address = 0xae7ab96520de3a18e5e111b5eaab095312d7fe84
-      OR token_sold_address = 0xae7ab96520de3a18e5e111b5eaab095312d7fe84
+      AND (token_bought_address = 0xae7ab96520de3a18e5e111b5eaab095312d7fe84
+      OR token_sold_address = 0xae7ab96520de3a18e5e111b5eaab095312d7fe84)
       AND block_time >= CAST('2022-01-01' AS TIMESTAMP)
   ),
   steth_trades_eth_amount AS (
@@ -182,3 +184,4 @@ FROM
   back_filled
 WHERE
   NOT reth_price_peg_ratio IS NULL /* Drop the most recent data until the peg is reported. */
+   AND (eth_reth_peg != 1.0775370240180655)  -- filter out one bad day of market data caused by games on a curve pool
