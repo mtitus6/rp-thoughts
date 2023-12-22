@@ -99,28 +99,27 @@ reth_avg AS (
 ),
 
 -- stETH
--- Note no peg is natively available here; would need to rebuild it if I want it
-steth_shares as (
-select
-preTotalEther*1e27/preTotalShares as pre_share_rate,
-postTotalEther*1e27/postTotalShares as post_share_rate,
-*
-from lido_ethereum.steth_evt_TokenRebased
-),
-
 steth_evt as (
 --old oracle
 SELECT "evt_block_time" AS time,
- cast(("postTotalPooledEther" - "preTotalPooledEther")* 365 * 24 * 60 * 60 /("preTotalPooledEther") as double)/timeElapsed * .9*100 as apy
+ cast(("postTotalPooledEther" - "preTotalPooledEther")* 365 * 24 * 60 * 60 /("preTotalPooledEther") as double)/timeElapsed * .9*100 as apy,
+ "postTotalPooledEther"/cast(totalShares as double) as eth_steth_peg
 FROM
   lido_ethereum.LegacyOracle_evt_PostTotalShares
   where "evt_block_time" <= cast('2023-05-16 00:00' as timestamp)
 
 --new V2 oracle
 union all
-select  evt_block_time AS time,
-        (365*24*60*60*(post_share_rate - pre_share_rate) / pre_share_rate / timeElapsed * 100) as apy
-from steth_shares
+SELECT 
+time,
+(eth_steth_peg - lag(eth_steth_peg) over (order by time))/date_diff('second', lag(time) over(order by time),time)*365*24*60*60*100 as apy,
+eth_steth_peg
+from (select call_block_time as time,
+      cast(json_extract_scalar(data, '$.simulatedShareRate') as double)/1e27 as eth_steth_peg
+      from lido_ethereum.AccountingOracle_call_submitReportData 
+      where call_success = true
+      and  call_block_time > cast('2023-05-16 00:00' as timestamp)) l
+order by time asc
 ),
 
 steth_avg AS (
@@ -128,7 +127,8 @@ steth_avg AS (
     time,
     apy as "stETH APY",
     AVG(apy) OVER (ORDER BY time ASC ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) as "stETH APY (7d)",
-    AVG(apy) OVER (ORDER BY time ASC ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as "stETH APY (30d)"
+    AVG(apy) OVER (ORDER BY time ASC ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as "stETH APY (30d)",
+    eth_steth_peg
     FROM steth_evt
 ),
 
@@ -183,7 +183,8 @@ combined AS (
     "stETH APY (30d)",
     "cbETH APY (30d)",
     eth_reth_peg,
-    eth_cbeth_peg
+    eth_cbeth_peg,
+    eth_steth_peg
     FROM reth_avg
     FULL OUTER JOIN steth_avg ON steth_avg.time = reth_avg.evt_block_time
     FULL OUTER JOIN cbeth_avg ON cbeth_avg.time = reth_avg.evt_block_time
@@ -194,8 +195,10 @@ ffill_helper AS (
     time,
     eth_reth_peg,
     eth_cbeth_peg,
+    eth_steth_peg,
     count(eth_reth_peg) OVER (ORDER BY time) AS eth_reth_peg_group,
-    count(eth_cbeth_peg) OVER (ORDER BY time) AS eth_cbeth_peg_group
+    count(eth_cbeth_peg) OVER (ORDER BY time) AS eth_cbeth_peg_group,
+    count(eth_steth_peg) OVER (ORDER BY time) AS eth_steth_peg_group
     FROM combined
 ),
 
@@ -203,7 +206,8 @@ ffilled AS (
     SELECT
     time,
     coalesce(eth_reth_peg, first_value(eth_reth_peg) OVER (partition by eth_reth_peg_group ORDER BY time)) as eth_reth_peg_filled,
-    coalesce(eth_cbeth_peg, first_value(eth_cbeth_peg) OVER (partition by eth_cbeth_peg_group ORDER BY time)) as eth_cbeth_peg_filled
+    coalesce(eth_cbeth_peg, first_value(eth_cbeth_peg) OVER (partition by eth_cbeth_peg_group ORDER BY time)) as eth_cbeth_peg_filled,
+    coalesce(eth_steth_peg, first_value(eth_steth_peg) OVER (partition by eth_steth_peg_group ORDER BY time)) as eth_steth_peg_filled
     FROM ffill_helper
 ),
 
@@ -221,7 +225,8 @@ postmerge AS (
     "stETH APY (30d)",
     "cbETH APY (30d)",
     eth_reth_peg_filled,
-    eth_cbeth_peg_filled
+    eth_cbeth_peg_filled,
+    eth_steth_peg_filled
     FROM combined
     FULL OUTER JOIN ffilled ON ffilled.time = combined.time
     WHERE combined.time >= cast('2022-09-15 00:00' as timestamp)
@@ -250,6 +255,7 @@ display AS (
     "cbETH APY (30d)",
     eth_reth_peg_filled,
     eth_cbeth_peg_filled,
+    eth_steth_peg_filled,
     "rETH APY (since merge)",
     "stETH APY (since merge)",
     "cbETH APY (since merge)"
